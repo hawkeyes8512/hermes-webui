@@ -101,12 +101,12 @@ class TestSessionDBInjection(unittest.TestCase):
 
     def test_session_db_default_is_none(self):
         """SessionDB should now be initialized through the helper call."""
-        pattern = "_state_db_path = (Path(_profile_home) / \"state.db\") if _profile_home else None"
+        target_pattern = "_state_db_path, _ephemeral_state_dir = _state_db_target_for_stream("
         helper_pattern = "_session_db = _build_session_db_for_stream(_state_db_path)"
         self.assertIn(
-            pattern,
+            target_pattern,
             STREAMING_PY,
-            "_state_db_path should be resolved from profile home in streaming.py",
+            "state DB target should be resolved through the ephemeral-aware helper",
         )
         self.assertIn(
             helper_pattern,

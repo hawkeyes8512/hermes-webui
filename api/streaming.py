@@ -8220,6 +8220,21 @@ def _adopt_session_db_for_cached_agent(agent, new_session_db):
     return new_session_db
 
 
+def _state_db_target_for_stream(profile_home, *, ephemeral: bool):
+    """Return a durable profile DB or an owned temp DB for ephemeral turns."""
+    if not ephemeral:
+        return ((Path(profile_home) / "state.db") if profile_home else None), None
+    import tempfile
+
+    owned_dir = Path(tempfile.mkdtemp(prefix="hermes-webui-btw-state-"))
+    return owned_dir / "state.db", owned_dir
+
+
+def _run_journal_enabled_for_stream(*, ephemeral: bool) -> bool:
+    """Ephemeral /btw turns must not leave a durable run journal."""
+    return not ephemeral
+
+
 def _build_session_db_for_stream(state_db_path):
     """Build a per-request SessionDB handle for WebUI session search.
 
@@ -8660,6 +8675,21 @@ def _refresh_cached_agent_primary_runtime_snapshot(agent) -> None:
             rt['is_anthropic_oauth'] = getattr(agent, '_is_anthropic_oauth')
 
 
+def _apply_ephemeral_agent_persistence_policy(
+    agent_kwargs: dict,
+    agent_params: set,
+    *,
+    ephemeral: bool,
+) -> None:
+    """Keep ephemeral Recall reads while disabling durable review/write paths."""
+    if not ephemeral:
+        return
+    if 'external_memory_read_only' in agent_params:
+        agent_kwargs['external_memory_read_only'] = True
+    if 'skip_background_review' in agent_params:
+        agent_kwargs['skip_background_review'] = True
+
+
 def _run_agent_streaming(
     session_id,
     msg_text,
@@ -8704,11 +8734,12 @@ def _run_agent_streaming(
         provider=model_provider,
         ephemeral=bool(ephemeral),
     )
-    try:
-        run_journal = RunJournalWriter(session_id, stream_id)
-    except Exception:
-        run_journal = None
-        logger.debug("Failed to initialize run journal for stream %s", stream_id, exc_info=True)
+    run_journal = None
+    if _run_journal_enabled_for_stream(ephemeral=bool(ephemeral)):
+        try:
+            run_journal = RunJournalWriter(session_id, stream_id)
+        except Exception:
+            logger.debug("Failed to initialize run journal for stream %s", stream_id, exc_info=True)
     if not ephemeral:
         try:
             append_turn_journal_event_for_stream(
@@ -8729,6 +8760,8 @@ def _run_agent_streaming(
     old_profile_env = {}
     result = None
     _result_partial_pre_call_context = []
+    _session_db = None
+    _ephemeral_state_dir = None
 
     # MCP discovery moved to AFTER the per-profile HERMES_HOME mutation below
     # (was here at v0.51.30) — the previous placement always read the default
@@ -9968,8 +10001,12 @@ def _run_agent_streaming(
             if _AIAgent is None:
                 raise ImportError(_aiagent_import_error_detail())
 
-            # Initialize SessionDB so session_search works in WebUI sessions
-            _state_db_path = (Path(_profile_home) / "state.db") if _profile_home else None
+            # Keep /btw's Agent transcript in an owned temporary database.
+            # Normal WebUI sessions continue to use the profile's durable state.db.
+            _state_db_path, _ephemeral_state_dir = _state_db_target_for_stream(
+                _profile_home,
+                ephemeral=bool(ephemeral),
+            )
             _session_db = _build_session_db_for_stream(_state_db_path)
             # #5979: publish catalog provenance from the durable disk cache when
             # memory is cold, so the custom-proxy resolver below sees the
@@ -10272,6 +10309,12 @@ def _run_agent_streaming(
             # re-instantiated fresh each turn (#855).
             if 'gateway_session_key' in _agent_params:
                 _agent_kwargs['gateway_session_key'] = session_id
+
+            _apply_ephemeral_agent_persistence_policy(
+                _agent_kwargs,
+                _agent_params,
+                ephemeral=bool(ephemeral),
+            )
 
             # ── Agent cache: reuse across messages in the same session ──
             # Mirrors gateway _agent_cache.  Keeps _user_turn_count alive so
@@ -12815,6 +12858,33 @@ def _run_agent_streaming(
         # CLI/cron env fallback resumes — same lifecycle slot as the env
         # restore above.
         _reset_turn_session_identity(_turn_session_identity_tokens)
+        if ephemeral:
+            # Remove every WebUI/Hermes persistence surface created while the
+            # temporary turn was running. The model already received the parent
+            # context and Recall; none of the side-question transcript is durable.
+            if _session_db is not None:
+                try:
+                    _session_db.close()
+                except Exception:
+                    logger.debug("Failed to close ephemeral session_db", exc_info=True)
+            if _ephemeral_state_dir is not None:
+                try:
+                    import shutil
+
+                    shutil.rmtree(_ephemeral_state_dir, ignore_errors=True)
+                except Exception:
+                    logger.debug("Failed to remove ephemeral state directory", exc_info=True)
+            try:
+                if s is not None:
+                    Path(s.path).unlink(missing_ok=True)
+                    Path(s.path).with_suffix('.json.bak').unlink(missing_ok=True)
+                from api.models import prune_session_from_index
+
+                prune_session_from_index(session_id)
+            except Exception:
+                logger.debug("Failed to prune ephemeral WebUI session storage", exc_info=True)
+            with LOCK:
+                SESSIONS.pop(session_id, None)
         with STREAMS_LOCK:
             STREAMS.pop(stream_id, None)
             CANCEL_FLAGS.pop(stream_id, None)
