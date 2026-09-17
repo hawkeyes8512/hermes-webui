@@ -13494,6 +13494,7 @@ def handle_get(handler, parsed) -> bool:
             _t1 = _time.monotonic()
             if _diag: _diag.stage("t1_after_get_session_check")
             s = get_session(sid, metadata_only=(not load_messages))
+            if _diag: _diag.stage("session_loaded")
             _session_profile = getattr(s, 'profile', None) or None
             if not _session_visible_to_active_profile(_session_profile, handler):
                 if _session_profile:
@@ -13604,6 +13605,7 @@ def handle_get(handler, parsed) -> bool:
                 metadata_summary = _metadata_only_message_summary(sid, profile=_session_profile)
             _t2 = _time.monotonic()
             if _diag: _diag.stage("t2_after_state_db_load")
+            if _diag: _diag.stage("state_loaded")
             effective_model = (
                 _resolve_effective_session_model_for_display(s)
                 if resolve_model
@@ -13616,6 +13618,7 @@ def handle_get(handler, parsed) -> bool:
             )
             _t3 = _time.monotonic()
             if _diag: _diag.stage("t3_after_model_resolve")
+            if _diag: _diag.stage("model_resolved")
             if load_messages:
                 if is_messaging_session and cli_messages:
                     # Recovery/aggregate sidecars can intentionally contain a
@@ -13692,6 +13695,7 @@ def handle_get(handler, parsed) -> bool:
             else:
                 _truncated_msgs = []
                 _messages_offset = 0
+            if _diag: _diag.stage("messages_windowed")
             # Index of the first returned message in the full message array.
             # Frontend uses this as cursor for scroll-to-top paging.
             _windowed_messages = (
@@ -13865,6 +13869,7 @@ def handle_get(handler, parsed) -> bool:
             raw["_msg_limit_max"] = _MAX_MSG_LIMIT
             _t4 = _time.monotonic()
             if _diag: _diag.stage("t4_after_compact_and_merge")
+            if _diag: _diag.stage("payload_built")
             if effective_model:
                 raw["model"] = effective_model
             if effective_provider:
@@ -13904,6 +13909,7 @@ def handle_get(handler, parsed) -> bool:
             resp = j(handler, {"session": redact})
             _t6 = _time.monotonic()
             if _diag: _diag.stage("t6_after_json_write")
+            if _diag: _diag.stage("response_ready")
             _total_ms = (_t6 - _t0) * 1000
             # Always log when slow (>2s) so we don't need HERMES_DEBUG_SLOW env var
             # to diagnose latency regressions. Opt-in env var still forces

@@ -9096,6 +9096,22 @@ def _run_agent_streaming(
                     STREAM_LAST_EVENT_ID[stream_id] = event_id
             except Exception:
                 logger.debug("Failed to append run journal event %s for stream %s", event, stream_id, exc_info=True)
+        if event in ('done', 'cancel', 'apperror', 'error'):
+            # WebUI owns this stream, so record terminal state at the shared
+            # server boundary rather than in a session-scoped Agent plugin.
+            # The notifier persists only outcome/run identity; it never stores
+            # or sends this payload's conversation content.
+            try:
+                from api.webui_discord_notifications import record_webui_terminal_event
+                record_webui_terminal_event(
+                    session_id=session_id,
+                    run_id=stream_id,
+                    event_name=event,
+                    payload=data,
+                    created_at=time.time(),
+                )
+            except Exception:
+                logger.exception("Failed to record WebUI terminal notification")
         if event_id and hasattr(q, "note_last_event_id"):
             try:
                 q.note_last_event_id(event_id)

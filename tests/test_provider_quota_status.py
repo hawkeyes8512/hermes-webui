@@ -1216,9 +1216,9 @@ def test_provider_quota_route_is_registered():
 
 
 def test_provider_quota_card_is_rendered_in_providers_panel():
-    """The Providers panel should show active provider quota/status before cards."""
+    """The Providers panel should show all supported provider quotas before cards."""
     panels = (ROOT / "static" / "panels.js").read_text(encoding="utf-8")
-    assert "_fetchProviderQuotaStatus(false)" in panels
+    assert "_fetchAllProviderQuotaStatuses(false)" in panels
     assert "'/api/provider/quota'" in panels
     assert "function _buildProviderQuotaCard" in panels
     assert "provider_quota_title" in panels

@@ -10956,11 +10956,33 @@ const _SELF_HOSTED_DEFAULT_BASE_URLS = Object.freeze({
   lmstudio: 'http://localhost:1234/v1',
 });
 
-async function _fetchProviderQuotaStatus(force=false){
-  const endpoint=force?`/api/provider/quota?refresh=1&ts=${Date.now()}`:'/api/provider/quota';
+const _PROVIDER_LIMIT_IDS=Object.freeze(['openai-codex','anthropic','openrouter']);
+
+async function _fetchProviderQuotaStatus(force=false,providerId=null){
+  const query=[];
+  if(providerId) query.push(`provider=${encodeURIComponent(providerId)}`);
+  if(force){
+    query.push('refresh=1');
+    query.push(`ts=${Date.now()}`);
+  }
+  const endpoint='/api/provider/quota'+(query.length?`?${query.join('&')}`:'');
   const status=await api(endpoint,{cache:'no-store'});
   if(status&&typeof status==='object') status.client_fetched_at=new Date().toISOString();
   return status;
+}
+
+async function _fetchAllProviderQuotaStatuses(force=false){
+  return Promise.all(_PROVIDER_LIMIT_IDS.map(providerId=>
+    _fetchProviderQuotaStatus(force,providerId).catch(e=>({
+      ok:false,
+      provider:providerId,
+      display_name:providerId,
+      status:'unavailable',
+      quota:null,
+      message:e.message||t('provider_quota_unavailable'),
+      client_fetched_at:new Date().toISOString(),
+    }))
+  ));
 }
 
 async function loadProvidersPanel(){
@@ -10969,14 +10991,15 @@ async function loadProvidersPanel(){
   if(!list) return;
   try{
     const data=await api('/api/providers');
-    const quota=await _fetchProviderQuotaStatus(false).catch(e=>({ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()}));
+    const quotas=await _fetchAllProviderQuotaStatuses(false);
     const providers=(data.providers||[]).filter(p=>p.configurable||p.is_oauth||p.is_custom||p.is_plugin_provider||p.is_self_hosted);
     list.innerHTML='';
     _providerCardEls.clear();
-    const quotaCard=_buildProviderQuotaCard(quota);
-    if(quotaCard){
+    for(const quota of quotas){
+      const quotaCard=_buildProviderQuotaCard(quota);
+      if(!quotaCard) continue;
       list.appendChild(quotaCard);
-      renderProviderCostChart(quotaCard); // async, fire-and-forget
+      if(quota.provider==='openrouter') renderProviderCostChart(quotaCard); // async, fire-and-forget
     }
     if(providers.length===0){
       list.style.display='none';
@@ -11003,7 +11026,7 @@ async function _refreshProviderQuota(card,button){
   let failed=false;
   let next;
   try{
-    next=await _fetchProviderQuotaStatus(true);
+    next=await _fetchProviderQuotaStatus(true,card.dataset.providerQuotaProvider||null);
     failed=next&&next.ok===false;
   }catch(e){
     failed=true;
@@ -11179,6 +11202,7 @@ function _buildProviderQuotaPoolBreakdown(accountLimits){
 function _buildProviderQuotaCard(status){
   if(!status) return null;
   const card=document.createElement('div');
+  card.dataset.providerQuotaProvider=status.provider||'';
   const state=(status.status||'unavailable').replace(/[^a-z0-9_-]/gi,'').toLowerCase()||'unavailable';
   card.className='provider-quota-card provider-quota-card-'+state;
   const accountLimits=status.account_limits||null;

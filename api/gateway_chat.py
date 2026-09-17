@@ -971,11 +971,26 @@ def _run_gateway_chat_streaming(
                     STREAM_LAST_EVENT_ID[stream_id] = event_id
             except Exception:
                 logger.debug("Failed to append gateway event %s for stream %s", event, stream_id, exc_info=True)
+        if event in ("done", "cancel", "apperror", "error"):
+            # Gateway-backed WebUI streams must use the same server-owned
+            # notification boundary as local streams. Do not route this through
+            # the Agent's session-scoped plugin lifecycle.
+            try:
+                from api.webui_discord_notifications import record_webui_terminal_event
+                record_webui_terminal_event(
+                    session_id=session_id,
+                    run_id=stream_id,
+                    event_name=event,
+                    payload=data,
+                    created_at=time.time(),
+                )
+            except Exception:
+                logger.exception("Failed to record WebUI terminal notification")
         if event_id and hasattr(q, "note_last_event_id"):
             try:
                 q.note_last_event_id(event_id)
             except Exception:
-                logger.debug("Failed to note gateway event_id %s for stream %s", event_id, stream_id, exc_info=True)
+                logger.debug("Failed to note event_id %s for stream %s", event_id, stream_id, exc_info=True)
         try:
             queue_item = (event, data, event_id) if event_id and hasattr(q, "subscribe_with_snapshot") else (event, data)
             q.put_nowait(queue_item)

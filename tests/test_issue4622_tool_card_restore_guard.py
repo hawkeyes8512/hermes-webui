@@ -84,7 +84,7 @@ global._isSkillUpdate = ()=>false;
 
 // Real functions under test (extracted from the live source):
 for (const fn of ['_snippetLooksLikeDiff','_colorDiffLines','_toolActionKind',
-                  '_toolCardAllowsDetail','buildToolCard','_anchorSceneToolCallFromRow']) {
+                  '_toolCardAllowsDetail','_toolCardDetailHtml','buildToolCard','_anchorSceneToolCallFromRow']) {
   eval(extractFunc(fn));
 }
 

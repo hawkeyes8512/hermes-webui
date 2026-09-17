@@ -254,6 +254,11 @@ function _setWorkspacePanelMode(mode){
   // so that toggleWorkspacePanel(false) from the toolbar doesn't clear the setting.
   try{localStorage.setItem('hermes-webui-workspace-panel', open ? 'open' : 'closed');}catch(_){}
   layout.classList.toggle('workspace-panel-collapsed',!open);
+  if(open){
+    if(typeof resumeWorkspacePanelDom==='function') resumeWorkspacePanelDom();
+  }else if(typeof suspendWorkspacePanelDom==='function'){
+    suspendWorkspacePanelDom();
+  }
   if(_isCompactWorkspaceViewport()){
     panel.classList.toggle('mobile-open',open);
   }else{

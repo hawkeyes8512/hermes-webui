@@ -1736,6 +1736,7 @@ async function loadSession(sid){
     }
     return;
   }
+  if(typeof _beginSessionSwitchPerf==='function') _beginSessionSwitchPerf(sid);
   // Mark this session as the in-flight load. Subsequent loadSession() calls
   // will overwrite this; stale awaits use the mismatch to bail out (#1060).
   const _loadGeneration = ++_loadSessionGeneration;
@@ -1853,6 +1854,7 @@ async function loadSession(sid){
   let data;
   try {
     data = await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=0`);
+    if(typeof _markSessionSwitchPerf==='function') _markSessionSwitchPerf('metadata-ready',sid);
   } catch(e) {
     const profileMismatch=_sessionProfileMismatchFromError(e);
     if(profileMismatch && profileMismatch.profile && !opts.skipProfileResolve){
@@ -3176,6 +3178,7 @@ async function _ensureMessagesLoaded(sid, opts) {
       `/api/session?session_id=${encodeURIComponent(sid)}&messages=1&resolve_model=0${reloadLimitParam}${expandParam}`,
       {timeoutMs:120000}
     );
+    if(typeof _markSessionSwitchPerf==='function') _markSessionSwitchPerf('messages-ready',sid);
   } finally {
     if (_ownsLoad()) _clearSameSessionForceReloadHint(sid);
   }

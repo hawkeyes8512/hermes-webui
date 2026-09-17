@@ -11496,6 +11496,10 @@ function _setWorklogDetailDisclosureOpen(el, open){
   // card restores open-but-empty after an in-session renderMessages() rebuild
   // (e.g. the next send re-defers it, then this toggles .open with no content).
   if(open){
+    const genericCard=(el.matches&&el.matches('.tool-card[data-tool-detail-deferred="1"]'))
+      ? el
+      : (el.querySelector&&el.querySelector('.tool-card[data-tool-detail-deferred="1"]'));
+    if(genericCard&&typeof _materializeToolCardDetail==='function') _materializeToolCardDetail(genericCard);
     const drow=(el.matches&&el.matches('.transparent-event-row[data-transparent-detail-deferred="1"]'))
       ? el
       : (el.closest&&el.closest('.transparent-event-row[data-transparent-detail-deferred="1"]'));
@@ -11955,6 +11959,8 @@ function _materializeTransparentToolDetail(row){
     let sourceDetail=null;
     try{
       const rebuilt=buildToolCard(tc);
+      const rebuiltCard=rebuilt&&rebuilt.querySelector('.tool-card');
+      if(rebuiltCard&&typeof _materializeToolCardDetail==='function') _materializeToolCardDetail(rebuiltCard);
       sourceDetail=rebuilt&&rebuilt.querySelector('.tool-card-detail');
     }catch(_){ sourceDetail=null; }
     if(sourceDetail){
@@ -16543,6 +16549,27 @@ function _processWakeupCardHtml(info, rawText, extras){
   return `<details class="process-wakeup-card"><summary class="process-wakeup-summary"><span class="process-wakeup-toggle">${li('chevron-right',12)}</span><span class="process-wakeup-label">${li('terminal',13)}<span>${esc(t('process_wakeup_label'))}</span></span>${cmdHtml}${chip}${extras.timeHtml||''}</summary><div class="process-wakeup-detail">${extras.filesHtml||''}${patternRow}${cmdRow}<div class="msg-body process-wakeup-body">${outHtml}</div>${extras.footHtml||''}</div></details>`;
 }
 
+let _activeSessionSwitchPerf=null;
+function _beginSessionSwitchPerf(sid){
+  if(typeof performance==='undefined') return;
+  _activeSessionSwitchPerf={sid:String(sid||''),startedAt:performance.now(),stages:[]};
+}
+function _markSessionSwitchPerf(stage,sid){
+  if(!_activeSessionSwitchPerf||typeof performance==='undefined') return;
+  if(sid!==undefined&&String(sid||'')!==_activeSessionSwitchPerf.sid) return;
+  _activeSessionSwitchPerf.stages.push({stage:String(stage||''),at:performance.now()});
+}
+function _finishSessionSwitchPerf(stage,sid){
+  if(!_activeSessionSwitchPerf||typeof performance==='undefined') return;
+  if(sid!==undefined&&String(sid||'')!==_activeSessionSwitchPerf.sid) return;
+  _markSessionSwitchPerf(stage,sid);
+  const finishedAt=performance.now();
+  const record={sid:_activeSessionSwitchPerf.sid,totalMs:Math.round((finishedAt-_activeSessionSwitchPerf.startedAt)*10)/10,stages:_activeSessionSwitchPerf.stages.map((entry,idx,list)=>({stage:entry.stage,elapsedMs:Math.round((entry.at-_activeSessionSwitchPerf.startedAt)*10)/10,deltaMs:Math.round((entry.at-(idx?list[idx-1].at:_activeSessionSwitchPerf.startedAt))*10)/10}))};
+  window.__hermesSessionSwitchPerf=window.__hermesSessionSwitchPerf||[];
+  window.__hermesSessionSwitchPerf.push(record);
+  if(window.__hermesSessionSwitchPerf.length>50) window.__hermesSessionSwitchPerf.splice(0,window.__hermesSessionSwitchPerf.length-50);
+  _activeSessionSwitchPerf=null;
+}
 function renderMessages(options){
   _lastMessageRenderAt=performance.now();
   const preserveScroll=!!(options&&options.preserveScroll);
@@ -16613,7 +16640,12 @@ function renderMessages(options){
       _scrollAfterMessageRender(preserveScroll, scrollSnapshot);
       if(_maybeRecoverVirtualizedBlankViewport(options, preserveScroll, virtualWindow)) return;
       _updateMessageVirtualMeasurements(renderVisWithIdx, renderVisibleIdxs, virtualWindow);
+      _markSessionSwitchPerf('dom-built',sid);
+      // Restored cache entries may have been captured before their first rAF
+      // post-processing pass. Run only idempotent work against nodes that still
+      // lack their processed markers; the helpers themselves skip completed work.
       requestAnimationFrame(()=>_postProcessWithAnchorSuppression(inner));
+      requestAnimationFrame(()=>_finishSessionSwitchPerf('postprocess-ready',sid));
       if(typeof _initMediaPlaybackObserver==='function') _initMediaPlaybackObserver();
       if(typeof loadTodos==='function'&&document.getElementById('panelTodos')&&document.getElementById('panelTodos').classList.contains('active')){loadTodos();}
       return;
@@ -18161,8 +18193,10 @@ function renderMessages(options){
   if(typeof _syncLiveRunStatusAfterRender==='function') _syncLiveRunStatusAfterRender();
   _scrollAfterMessageRender(preserveScroll, scrollSnapshot);
   if(_maybeRecoverVirtualizedBlankViewport(options, preserveScroll, virtualWindow)) return;
-  // Apply syntax highlighting after DOM is built
+  // Apply syntax highlighting after DOM is built.
+  _markSessionSwitchPerf('dom-built',sid);
   requestAnimationFrame(()=>_postProcessWithAnchorSuppression(inner));
+  requestAnimationFrame(()=>_finishSessionSwitchPerf('postprocess-ready',sid));
   // Refresh todo panel if it's currently open
   if(typeof loadTodos==='function' && document.getElementById('panelTodos') && document.getElementById('panelTodos').classList.contains('active')){
     loadTodos();
@@ -18715,6 +18749,34 @@ function _toolDetailLeadText(kind, tc){
   if(!target) return '';
   return target;
 }
+function _toolCardDetailHtml(tc, toolKind, displaySnippet, hasMore, moreLabel, lessLabel, detailLeadText){
+  const detailLeadLabel=typeof _toolDetailLeadLabel==='function'?_toolDetailLeadLabel(toolKind):(toolKind==='shell'?'Shell':'Input');
+  const detailLead=detailLeadText?`<div class="tool-card-detail-lead"><div class="tool-card-detail-lead-label">${esc(detailLeadLabel)}</div><pre>${esc(detailLeadText)}</pre></div>`:'';
+  const argsEntries=tc.args&&Object.keys(tc.args).length?Object.entries(tc.args):[];
+  const visibleArgs=(detailLeadText&&toolKind==='shell')?[]:argsEntries;
+  return `<div class="tool-card-detail">${detailLead}${visibleArgs.length?`<div class="tool-card-args">${visibleArgs.map(([k,v])=>{let sv=String(v);if(typeof _redactToolTargetLabel==='function'){try{sv=_redactToolTargetLabel(sv);}catch(e){}}return `<div class="tool-arg-pair"><span class="tool-arg-key">${esc(k)}</span><span class="tool-arg-val">${esc(sv)}</span></div>`;}).join('')}</div>`:''}${displaySnippet?`<div class="tool-card-result"><pre>${tc.is_diff||_snippetLooksLikeDiff(displaySnippet)?`<code class="diff-block" data-highlighted="1">${_colorDiffLines(displaySnippet)}</code>`:esc(displaySnippet)}</pre>${hasMore?`<button class="tool-card-more" data-full="${esc(tc.snippet||'').replace(/"/g,'&quot;')}" data-short="${esc(displaySnippet||'').replace(/"/g,'&quot;')}" data-is-diff="${tc.is_diff||_snippetLooksLikeDiff(displaySnippet)?1:0}" data-more-label="${esc(moreLabel)}" data-less-label="${esc(lessLabel)}" onclick="event.stopPropagation();_toggleToolDiff(this)">${esc(moreLabel)}</button>`:''}</div>`:''}</div>`;
+}
+function _materializeToolCardDetail(card){
+  if(!card||card.getAttribute('data-tool-detail-deferred')!=='1') return;
+  const row=card.closest('.tool-card-row');
+  const data=row&&row._toolDetailData;
+  const template=card.querySelector('template.tool-card-detail-template');
+  if(data){
+    card.insertAdjacentHTML('beforeend',_toolCardDetailHtml(data.tc,data.toolKind,data.displaySnippet,data.hasMore,data.moreLabel,data.lessLabel,data.detailLeadText));
+  }else if(template){
+    card.insertAdjacentHTML('beforeend',template.innerHTML);
+  }else{
+    return;
+  }
+  if(template) template.remove();
+  card.removeAttribute('data-tool-detail-deferred');
+}
+function _toggleToolCardDetail(header){
+  const card=header&&header.closest('.tool-card');
+  if(!card) return;
+  if(!card.classList.contains('open')) _materializeToolCardDetail(card);
+  card.classList.toggle('open');
+}
 function buildToolCard(tc){
   const row=document.createElement('div');
   row.className='tool-card-row';
@@ -18749,7 +18811,7 @@ function buildToolCard(tc){
   const isDelegation=tc.name==='delegate_task';
   const openClass='';
   const cardClass='tool-card'+(tc.done===false?' tool-card-running':'')+(isSubagent?' tool-card-subagent':'')+(hasDetail?'':' tool-card-no-detail')+openClass;
-  const headerClick=hasDetail?' onclick="this.closest(\'.tool-card\').classList.toggle(\'open\')"':'';
+  const headerClick=hasDetail?' onclick="_toggleToolCardDetail(this)"':'';
   // Clean up legacy subagent prefixes since the Lucide icon already shows it
   let displayName=typeof _toolActionLabelText==='function'?_toolActionLabelText(tc,{limit:112}):_toolDisplayName(tc);
   let genericName=typeof _toolActionLabelText==='function'?_toolActionLabelText(tc,{generic:true,limit:112}):_toolDisplayName(tc);
@@ -18758,12 +18820,10 @@ function buildToolCard(tc){
   if(toolKind==='shell'||previewText===argPreview||previewText==='Completed'||previewText==='Running'||previewText==='Failed') previewText='';
   if(isSubagent) previewText=previewText.replace(/^(?:\u{1F500}|↳)\s*/u,'');
   const detailLeadText=hasDetail&&typeof _toolDetailLeadText==='function'?_toolDetailLeadText(toolKind,tc):'';
-  const detailLeadLabel=typeof _toolDetailLeadLabel==='function'?_toolDetailLeadLabel(toolKind):(toolKind==='shell'?'Shell':'Input');
-  const detailLead=detailLeadText?`<div class="tool-card-detail-lead"><div class="tool-card-detail-lead-label">${esc(detailLeadLabel)}</div><pre>${esc(detailLeadText)}</pre></div>`:'';
-  const argsEntries=tc.args&&Object.keys(tc.args).length?Object.entries(tc.args):[];
-  const visibleArgs=(detailLeadText&&toolKind==='shell')?[]:argsEntries;
+  // tool-card-detail-lead is generated lazily by _toolCardDetailHtml.
+  // const visibleArgs=(detailLeadText&&toolKind==='shell')?[]:argsEntries;
   row.innerHTML=`
-    <div class="${cardClass}">
+    <div class="${cardClass}"${hasDetail?' data-tool-detail-deferred="1"':''}>
       <div class="tool-card-header"${headerClick}>
         ${runIndicator}
         <span class="tool-card-icon">${icon}</span>
@@ -18771,22 +18831,10 @@ function buildToolCard(tc){
         <span class="tool-card-preview">${esc(previewText)}</span>
         ${hasDetail?`<span class="tool-card-toggle">${li('chevron-right',12)}</span>`:''}
       </div>
-      ${hasDetail?`<div class="tool-card-detail">
-        ${detailLead}
-        ${visibleArgs.length?`<div class="tool-card-args">${
-          visibleArgs.map(([k,v])=>{
-            let sv=String(v);
-            if(typeof _redactToolTargetLabel==='function'){ try{ sv=_redactToolTargetLabel(sv); }catch(e){} }
-            return `<div class="tool-arg-pair"><span class="tool-arg-key">${esc(k)}</span><span class="tool-arg-val">${esc(sv)}</span></div>`;
-          }).join('')
-        }</div>`:''}
-        ${displaySnippet?`<div class="tool-card-result">
-          <pre>${tc.is_diff||_snippetLooksLikeDiff(displaySnippet)?`<code class="diff-block" data-highlighted="1">${_colorDiffLines(displaySnippet)}</code>`:esc(displaySnippet)}</pre>
-          ${hasMore?`<button class="tool-card-more" data-full="${esc(tc.snippet||'').replace(/"/g,'&quot;')}" data-short="${esc(displaySnippet||'').replace(/"/g,'&quot;')}" data-is-diff="${tc.is_diff||_snippetLooksLikeDiff(displaySnippet)?1:0}" data-more-label="${esc(moreLabel)}" data-less-label="${esc(lessLabel)}" onclick="event.stopPropagation();_toggleToolDiff(this)">${esc(moreLabel)}</button>`:''}
-        </div>`:''}
-      </div>`:''}
+      ${hasDetail?`<template class="tool-card-detail-template">${_toolCardDetailHtml(tc,toolKind,displaySnippet,hasMore,moreLabel,lessLabel,detailLeadText)}</template>`:''}
     </div>`;
   row._tcData = tc;
+  if(hasDetail) row._toolDetailData={tc,toolKind,displaySnippet,hasMore,moreLabel,lessLabel,detailLeadText};
   // Durable classification flags: _tcData (a JS property) does NOT survive the
   // outerHTML/innerHTML snapshot+restore the live tool-call group uses on session
   // switch/restore, which would make _syncToolCallGroupSummary re-count restored
