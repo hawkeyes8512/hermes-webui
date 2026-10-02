@@ -13,8 +13,9 @@ def test_provider_cost_chart_ui_guards_are_present():
     # function is defined
     assert "async function renderProviderCostChart(card)" in panels_js
 
-    # function is wired up inside loadProvidersPanel (fire-and-forget)
-    assert "renderProviderCostChart(quotaCard)" in panels_js
+    # function is wired up only for OpenRouter quota cards (fire-and-forget)
+    assert "_isOpenRouterProvider(status.provider)" in panels_js
+    assert "renderProviderCostChart(fresh)" in panels_js
 
     # fetch target is correct
     assert "/api/provider/cost-history?provider=openrouter" in panels_js

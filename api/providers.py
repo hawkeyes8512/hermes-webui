@@ -83,7 +83,7 @@ _ACCOUNT_USAGE_CACHE_TTL_SECONDS = 45.0
 _PROVIDERS_CACHE_TTL_SECONDS = 30.0
 _ACCOUNT_USAGE_CACHE_MAX_ENTRIES = 64
 _ACCOUNT_USAGE_WORKER_IDLE_SECONDS = 5 * 60
-_ACCOUNT_USAGE_PROVIDERS = frozenset({"openai-codex", "anthropic"})
+_ACCOUNT_USAGE_PROVIDERS = frozenset({"openai-codex", "anthropic", "xai-oauth"})
 
 # Upper bound on simultaneous profile-isolated quota probe subprocesses.
 # Each probe runs a Python child for up to 35 s; capping concurrency prevents
@@ -663,7 +663,11 @@ def _fetch_snapshot(provider, api_key, env_var=None):
         os.environ[env_var] = api_key
     try:
         try:
-            snapshot = fetch_account_usage(provider, api_key=api_key)
+            if provider == "xai-oauth":
+                from api.grok_usage import fetch_grok_account_usage
+                snapshot = fetch_grok_account_usage()
+            else:
+                snapshot = fetch_account_usage(provider, api_key=api_key)
         except Exception:
             snapshot = None
         if str(provider or "").strip().lower() == "openai-codex":
@@ -1642,7 +1646,9 @@ def _account_usage_subprocess_env(home: Path, provider: str, api_key: str | None
         from api.config import _AGENT_DIR
     except Exception:
         _AGENT_DIR = None
-    pythonpath_parts: list[str] = []
+    # Workers may be spawned outside the WebUI checkout. Pin our helper import
+    # to the installed source root, while credentials remain scoped to home.
+    pythonpath_parts: list[str] = [str(Path(__file__).resolve().parents[1])]
     if _AGENT_DIR:
         pythonpath_parts.append(str(_AGENT_DIR))
     existing_pythonpath = env.get("PYTHONPATH", "")
@@ -2143,6 +2149,8 @@ def get_provider_quota(provider_id: str | None = None, *, refresh: bool = False)
         }
 
     display_name = _PROVIDER_DISPLAY.get(provider, provider.replace("-", " ").title())
+    # Grok billing is a weekly usage meter. A local credential-pool entry only
+    # proves a token exists; it must not short-circuit the billing probe.
     if provider in _ACCOUNT_USAGE_PROVIDERS:
         return _provider_account_usage_status(provider, display_name, refresh=refresh)
 

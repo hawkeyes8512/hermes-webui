@@ -11072,8 +11072,49 @@ const _SELF_HOSTED_DEFAULT_BASE_URLS = Object.freeze({
   lmstudio: 'http://localhost:1234/v1',
 });
 
-async function _fetchProviderQuotaStatus(force=false){
-  const endpoint=force?`/api/provider/quota?refresh=1&ts=${Date.now()}`:'/api/provider/quota';
+let _providersPanelLoadSeq=0;
+
+function _providerQuotaProviderIdentity(provider,status){
+  const info=provider&&typeof provider==='object'?provider:{id:provider};
+  const result=status&&typeof status==='object'?Object.assign({},status):{};
+  const providerId=String(info.id||'').trim()||String(result.provider||'').trim();
+  if(providerId) result.provider=providerId;
+  if(!result.display_name) result.display_name=info.display_name||providerId||t('provider_quota_active_provider');
+  return result;
+}
+
+function _providerQuotaLoadingStatus(provider){
+  return _providerQuotaProviderIdentity(provider,{
+    ok:false,
+    status:'loading',
+    quota:null,
+    message:t('provider_quota_refreshing'),
+  });
+}
+
+function _providerQuotaErrorStatus(provider,error){
+  return _providerQuotaProviderIdentity(provider,{
+    ok:false,
+    status:'failed',
+    quota:null,
+    message:(error&&error.message)||t('provider_quota_unavailable'),
+    client_fetched_at:new Date().toISOString(),
+  });
+}
+
+function _isOpenRouterProvider(providerId){
+  return String(providerId||'').trim().toLowerCase()==='openrouter';
+}
+
+async function _fetchProviderQuotaStatus(providerId,force=false){
+  if(typeof providerId==='boolean'){
+    force=providerId;
+    providerId='';
+  }
+  const query=[];
+  if(providerId) query.push(`provider=${encodeURIComponent(providerId)}`);
+  if(force) query.push(`refresh=1&ts=${Date.now()}`);
+  const endpoint=`/api/provider/quota${query.length?'?'+query.join('&'):''}`;
   const status=await api(endpoint,{cache:'no-store'});
   if(status&&typeof status==='object') status.client_fetched_at=new Date().toISOString();
   return status;
@@ -11083,34 +11124,70 @@ async function loadProvidersPanel(){
   const list=$('providersList');
   const empty=$('providersEmpty');
   if(!list) return;
+  const loadSeq=++_providersPanelLoadSeq;
+  const isCurrent=()=>loadSeq===_providersPanelLoadSeq;
   try{
     const data=await api('/api/providers');
-    const quota=await _fetchProviderQuotaStatus(false).catch(e=>({ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()}));
-    const providers=(data.providers||[]).filter(p=>p.configurable||p.is_oauth||p.is_custom||p.is_plugin_provider||p.is_self_hosted);
+    if(!isCurrent()) return;
+    const allProviders=Array.isArray(data&&data.providers)?data.providers:[];
+    const providers=allProviders.filter(p=>p.configurable||p.is_oauth||p.is_custom||p.is_plugin_provider||p.is_self_hosted);
+    const quotaProviders=[];
+    const seenQuotaProviders=new Set();
+    for(const p of allProviders){
+      const providerId=String(p&&p.id||'').trim();
+      if(p&&p.has_key&&providerId&&!seenQuotaProviders.has(providerId)){
+        seenQuotaProviders.add(providerId);
+        quotaProviders.push(p);
+      }
+    }
     list.innerHTML='';
     _providerCardEls.clear();
-    const quotaCard=_buildProviderQuotaCard(quota);
-    if(quotaCard){
-      list.appendChild(quotaCard);
-      renderProviderCostChart(quotaCard); // async, fire-and-forget
+    const quotaEntries=[];
+    for(const provider of quotaProviders){
+      const card=_buildProviderQuotaCard(_providerQuotaLoadingStatus(provider));
+      if(card){
+        list.appendChild(card);
+        quotaEntries.push({provider,card});
+      }
     }
     if(providers.length===0){
-      list.style.display='none';
-      if(empty) empty.style.display='';
-      return;
+      const hasQuotaCards=quotaEntries.length>0;
+      list.style.display=hasQuotaCards?'':'none';
+      if(empty) empty.style.display=hasQuotaCards?'none':'';
+      if(!hasQuotaCards) return;
+    }else{
+      if(empty) empty.style.display='none';
+      list.style.display='';
     }
-    if(empty) empty.style.display='none';
-    list.style.display='';
     for(const p of providers){
       list.appendChild(_buildProviderCard(p));
     }
+    await Promise.all(quotaEntries.map(async({provider,card})=>{
+      let status;
+      try{
+        status=await _fetchProviderQuotaStatus(provider.id,false);
+        if(!status||typeof status!=='object') status=_providerQuotaErrorStatus(provider);
+      }catch(e){
+        status=_providerQuotaErrorStatus(provider,e);
+      }
+      status=_providerQuotaProviderIdentity(provider,status);
+      if(!isCurrent()||card.isConnected===false) return;
+      const fresh=_buildProviderQuotaCard(status);
+      if(!fresh) return;
+      card.replaceWith(fresh);
+      if(_isOpenRouterProvider(status.provider)) renderProviderCostChart(fresh);
+    }));
   }catch(e){
+    if(!isCurrent()) return;
     list.innerHTML='<div style="color:var(--error);padding:12px;font-size:13px">Failed to load providers: '+esc(e.message||String(e))+'</div>';
   }
 }
 
 async function _refreshProviderQuota(card,button){
   if(!card) return;
+  const providerId=card.dataset&&card.dataset.provider||'';
+  const providerName=card.dataset&&card.dataset.providerName||'';
+  const providerIdentity=providerId?{id:providerId,display_name:providerName}:null;
   if(button){
     button.disabled=true;
     button.textContent=t('provider_quota_refreshing');
@@ -11119,12 +11196,13 @@ async function _refreshProviderQuota(card,button){
   let failed=false;
   let next;
   try{
-    next=await _fetchProviderQuotaStatus(true);
-    failed=next&&next.ok===false;
+    next=await _fetchProviderQuotaStatus(providerId,true);
+    if(!next||typeof next!=='object') next=_providerQuotaErrorStatus(providerIdentity);
   }catch(e){
-    failed=true;
-    next={ok:false,status:'unavailable',quota:null,message:e.message||t('provider_quota_unavailable'),client_fetched_at:new Date().toISOString()};
+    next=_providerQuotaErrorStatus(providerIdentity,e);
   }
+  next=_providerQuotaProviderIdentity(providerIdentity,next);
+  failed=next&&next.ok===false;
   try{
     const fresh=_buildProviderQuotaCard(next);
     if(fresh){
@@ -11132,7 +11210,7 @@ async function _refreshProviderQuota(card,button){
       // Re-render the 7-day spend chart onto the rebuilt card — the quota
       // refresh replaces the whole card, which would otherwise drop the chart
       // until the next full panel reload (#3600).
-      renderProviderCostChart(fresh); // async, fire-and-forget
+      if(_isOpenRouterProvider(next.provider)) renderProviderCostChart(fresh); // async, fire-and-forget
       if(typeof showToast==='function') showToast(failed?t('provider_quota_refresh_failed'):t('provider_quota_refresh_succeeded'));
       return;
     }
@@ -11195,6 +11273,7 @@ function _providerQuotaStatusLabel(value){
   const state=_providerQuotaStateClass(value);
   const key={
     available:'provider_quota_status_available',
+    loading:'provider_quota_refreshing',
     exhausted:'provider_quota_status_exhausted',
     unavailable:'provider_quota_status_unavailable',
     failed:'provider_quota_status_failed',
@@ -11297,6 +11376,12 @@ function _buildProviderQuotaCard(status){
   const card=document.createElement('div');
   const state=(status.status||'unavailable').replace(/[^a-z0-9_-]/gi,'').toLowerCase()||'unavailable';
   card.className='provider-quota-card provider-quota-card-'+state;
+  const providerId=String(status.provider||'').trim();
+  if(providerId){
+    if(!card.dataset) card.dataset={};
+    card.dataset.provider=providerId;
+    card.dataset.providerName=String(status.display_name||providerId);
+  }
   const accountLimits=status.account_limits||null;
   const providerBase=status.display_name||status.provider||t('provider_quota_active_provider');
   const provider=(accountLimits&&accountLimits.plan)?`${providerBase} · ${accountLimits.plan}`:providerBase;
@@ -11360,6 +11445,7 @@ function _buildProviderQuotaCard(status){
 }
 
 async function renderProviderCostChart(card){
+  if(!card||!_isOpenRouterProvider(card.dataset&&card.dataset.provider)) return;
   let history;
   try{
     history=await api('/api/provider/cost-history?provider=openrouter');
